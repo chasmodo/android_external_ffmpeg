@@ -276,6 +276,16 @@ const char *av_dirname(char *path);
  */
 int av_match_name(const char *name, const char *names);
 
+/**
+ * Append path component to the existing path.
+ * Path separator '/' is placed between when needed.
+ * Resulting string have to be freed with av_free().
+ * @param path      base path
+ * @param component component to be appended
+ * @return new path or NULL on error.
+ */
+char *av_append_path_component(const char *path, const char *component);
+
 enum AVEscapeMode {
     AV_ESCAPE_MODE_AUTO,      ///< Use auto-selected escaping mode.
     AV_ESCAPE_MODE_BACKSLASH, ///< Use backslash escaping.
@@ -290,14 +300,14 @@ enum AVEscapeMode {
  * characters lists, except it is guaranteed to use the exact same list
  * of whitespace characters as the rest of libavutil.
  */
-#define AV_ESCAPE_FLAG_WHITESPACE 0x01
+#define AV_ESCAPE_FLAG_WHITESPACE (1 << 0)
 
 /**
  * Escape only specified special characters.
  * Without this flag, escape also any characters that may be considered
  * special by av_get_token(), such as the single quote.
  */
-#define AV_ESCAPE_FLAG_STRICT 0x02
+#define AV_ESCAPE_FLAG_STRICT (1 << 1)
 
 /**
  * Escape string in src, and put the escaped string in an allocated

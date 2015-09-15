@@ -68,8 +68,7 @@ typedef struct {
     AVFrame *outpicref;
     FFTContext *fft_context;
     FFTComplex *fft_data;
-    FFTComplex *fft_result_left;
-    FFTComplex *fft_result_right;
+    FFTComplex *fft_result;
     uint8_t *spectogram;
     SparseCoeff *coeff_sort;
     SparseCoeff *coeffs[VIDEO_WIDTH];
@@ -90,8 +89,10 @@ typedef struct {
     float coeffclamp;   /* lower coeffclamp, more precise, higher coeffclamp, faster */
     int fullhd;         /* if true, output video is at full HD resolution, otherwise it will be halved */
     float gamma;        /* lower gamma, more contrast, higher gamma, more range */
+    float gamma2;       /* gamma of bargraph */
     int fps;            /* the required fps is so strict, so it's enough to be int, but 24000/1001 etc cannot be encoded */
     int count;          /* fps * count = transform rate */
+    int draw_text;
 } ShowCQTContext;
 
 #define OFFSET(x) offsetof(ShowCQTContext, x)
@@ -103,11 +104,13 @@ static const AVOption showcqt_options[] = {
     { "timeclamp", "set timeclamp", OFFSET(timeclamp), AV_OPT_TYPE_DOUBLE, { .dbl = 0.17 }, 0.1, 1.0, FLAGS },
     { "coeffclamp", "set coeffclamp", OFFSET(coeffclamp), AV_OPT_TYPE_FLOAT, { .dbl = 1 }, 0.1, 10, FLAGS },
     { "gamma", "set gamma", OFFSET(gamma), AV_OPT_TYPE_FLOAT, { .dbl = 3 }, 1, 7, FLAGS },
-    { "fullhd", "set full HD resolution", OFFSET(fullhd), AV_OPT_TYPE_INT, { .i64 = 1 }, 0, 1, FLAGS },
+    { "gamma2", "set gamma of bargraph", OFFSET(gamma2), AV_OPT_TYPE_FLOAT, { .dbl = 1 }, 1, 7, FLAGS },
+    { "fullhd", "set full HD resolution", OFFSET(fullhd), AV_OPT_TYPE_BOOL, { .i64 = 1 }, 0, 1, FLAGS },
     { "fps", "set video fps", OFFSET(fps), AV_OPT_TYPE_INT, { .i64 = 25 }, 10, 100, FLAGS },
     { "count", "set number of transform per frame", OFFSET(count), AV_OPT_TYPE_INT, { .i64 = 6 }, 1, 30, FLAGS },
     { "fontfile", "set font file", OFFSET(fontfile), AV_OPT_TYPE_STRING, { .str = NULL }, CHAR_MIN, CHAR_MAX, FLAGS },
     { "fontcolor", "set font color", OFFSET(fontcolor), AV_OPT_TYPE_STRING, { .str = FONTCOLOR_DEFAULT }, CHAR_MIN, CHAR_MAX, FLAGS },
+    { "text", "draw text", OFFSET(draw_text), AV_OPT_TYPE_BOOL, { .i64 = 1 }, 0, 1, FLAGS },
     { NULL }
 };
 
@@ -123,8 +126,7 @@ static av_cold void uninit(AVFilterContext *ctx)
     for (k = 0; k < VIDEO_WIDTH; k++)
         av_freep(&s->coeffs[k]);
     av_freep(&s->fft_data);
-    av_freep(&s->fft_result_left);
-    av_freep(&s->fft_result_right);
+    av_freep(&s->fft_result);
     av_freep(&s->coeff_sort);
     av_freep(&s->spectogram);
     av_freep(&s->font_alpha);
@@ -203,7 +205,7 @@ static void load_freetype_font(AVFilterContext *ctx)
     if (FT_Set_Char_Size(face, 16*64 * linear_hori_advance / face->glyph->linearHoriAdvance, 0, 0, 0))
         goto fail;
 
-    s->font_alpha = av_malloc(font_height * video_width);
+    s->font_alpha = av_malloc_array(font_height, video_width);
     if (!s->font_alpha)
         goto fail;
 
@@ -343,11 +345,10 @@ static int config_output(AVFilterLink *outlink)
 
     s->fft_data         = av_malloc_array(fft_len, sizeof(*s->fft_data));
     s->coeff_sort       = av_malloc_array(fft_len, sizeof(*s->coeff_sort));
-    s->fft_result_left  = av_malloc_array(fft_len, sizeof(*s->fft_result_left));
-    s->fft_result_right = av_malloc_array(fft_len, sizeof(*s->fft_result_right));
+    s->fft_result       = av_malloc_array(fft_len + 1, sizeof(*s->fft_result));
     s->fft_context      = av_fft_init(s->fft_bits, 0);
 
-    if (!s->fft_data || !s->coeff_sort || !s->fft_result_left || !s->fft_result_right || !s->fft_context)
+    if (!s->fft_data || !s->coeff_sort || !s->fft_result || !s->fft_context)
         return AVERROR(ENOMEM);
 
 #if CONFIG_LIBFREETYPE
@@ -539,52 +540,72 @@ static int plot_cqt(AVFilterLink *inlink)
     int font_height = (FONT_HEIGHT/2) * video_scale;
 
     /* real part contains left samples, imaginary part contains right samples */
-    memcpy(s->fft_result_left, s->fft_data, fft_len * sizeof(*s->fft_data));
-    av_fft_permute(s->fft_context, s->fft_result_left);
-    av_fft_calc(s->fft_context, s->fft_result_left);
-
-    /* separate left and right, (and multiply by 2.0) */
-    s->fft_result_right[0].re = 2.0f * s->fft_result_left[0].im;
-    s->fft_result_right[0].im = 0;
-    s->fft_result_left[0].re = 2.0f * s->fft_result_left[0].re;
-    s->fft_result_left[0].im = 0;
-    for (x = 1; x <= fft_len >> 1; x++) {
-        FFTSample tmpy = s->fft_result_left[fft_len-x].im - s->fft_result_left[x].im;
-
-        s->fft_result_right[x].re = s->fft_result_left[x].im + s->fft_result_left[fft_len-x].im;
-        s->fft_result_right[x].im = s->fft_result_left[x].re - s->fft_result_left[fft_len-x].re;
-        s->fft_result_right[fft_len-x].re = s->fft_result_right[x].re;
-        s->fft_result_right[fft_len-x].im = -s->fft_result_right[x].im;
-
-        s->fft_result_left[x].re = s->fft_result_left[x].re + s->fft_result_left[fft_len-x].re;
-        s->fft_result_left[x].im = tmpy;
-        s->fft_result_left[fft_len-x].re = s->fft_result_left[x].re;
-        s->fft_result_left[fft_len-x].im = -s->fft_result_left[x].im;
-    }
+    memcpy(s->fft_result, s->fft_data, fft_len * sizeof(*s->fft_data));
+    av_fft_permute(s->fft_context, s->fft_result);
+    av_fft_calc(s->fft_context, s->fft_result);
+    s->fft_result[fft_len] = s->fft_result[0];
 
     /* calculating cqt */
     for (x = 0; x < VIDEO_WIDTH; x++) {
         int u;
-        float g = 1.0f / s->gamma;
-        FFTComplex l = {0,0};
-        FFTComplex r = {0,0};
+        FFTComplex v = {0,0};
+        FFTComplex w = {0,0};
+        FFTComplex l, r;
 
         for (u = 0; u < s->coeffs_len[x]; u++) {
             FFTSample value = s->coeffs[x][u].value;
             int index = s->coeffs[x][u].index;
-            l.re += value * s->fft_result_left[index].re;
-            l.im += value * s->fft_result_left[index].im;
-            r.re += value * s->fft_result_right[index].re;
-            r.im += value * s->fft_result_right[index].im;
+            v.re += value * s->fft_result[index].re;
+            v.im += value * s->fft_result[index].im;
+            w.re += value * s->fft_result[fft_len - index].re;
+            w.im += value * s->fft_result[fft_len - index].im;
         }
+
+        /* separate left and right, (and multiply by 2.0) */
+        l.re = v.re + w.re;
+        l.im = v.im - w.im;
+        r.re = w.im + v.im;
+        r.im = w.re - v.re;
         /* result is power, not amplitude */
         result[x][0] = l.re * l.re + l.im * l.im;
         result[x][2] = r.re * r.re + r.im * r.im;
         result[x][1] = 0.5f * (result[x][0] + result[x][2]);
-        result[x][3] = result[x][1];
-        result[x][0] = 255.0f * powf(FFMIN(1.0f,result[x][0]), g);
-        result[x][1] = 255.0f * powf(FFMIN(1.0f,result[x][1]), g);
-        result[x][2] = 255.0f * powf(FFMIN(1.0f,result[x][2]), g);
+
+        if (s->gamma2 == 1.0f)
+            result[x][3] = result[x][1];
+        else if (s->gamma2 == 2.0f)
+            result[x][3] = sqrtf(result[x][1]);
+        else if (s->gamma2 == 3.0f)
+            result[x][3] = cbrtf(result[x][1]);
+        else if (s->gamma2 == 4.0f)
+            result[x][3] = sqrtf(sqrtf(result[x][1]));
+        else
+            result[x][3] = expf(logf(result[x][1]) * (1.0f / s->gamma2));
+
+        result[x][0] = FFMIN(1.0f, result[x][0]);
+        result[x][1] = FFMIN(1.0f, result[x][1]);
+        result[x][2] = FFMIN(1.0f, result[x][2]);
+        if (s->gamma == 1.0f) {
+            result[x][0] = 255.0f * result[x][0];
+            result[x][1] = 255.0f * result[x][1];
+            result[x][2] = 255.0f * result[x][2];
+        } else if (s->gamma == 2.0f) {
+            result[x][0] = 255.0f * sqrtf(result[x][0]);
+            result[x][1] = 255.0f * sqrtf(result[x][1]);
+            result[x][2] = 255.0f * sqrtf(result[x][2]);
+        } else if (s->gamma == 3.0f) {
+            result[x][0] = 255.0f * cbrtf(result[x][0]);
+            result[x][1] = 255.0f * cbrtf(result[x][1]);
+            result[x][2] = 255.0f * cbrtf(result[x][2]);
+        } else if (s->gamma == 4.0f) {
+            result[x][0] = 255.0f * sqrtf(sqrtf(result[x][0]));
+            result[x][1] = 255.0f * sqrtf(sqrtf(result[x][1]));
+            result[x][2] = 255.0f * sqrtf(sqrtf(result[x][2]));
+        } else {
+            result[x][0] = 255.0f * expf(logf(result[x][0]) * (1.0f / s->gamma));
+            result[x][1] = 255.0f * expf(logf(result[x][1]) * (1.0f / s->gamma));
+            result[x][2] = 255.0f * expf(logf(result[x][2]) * (1.0f / s->gamma));
+        }
     }
 
     if (!s->fullhd) {
@@ -632,7 +653,7 @@ static int plot_cqt(AVFilterLink *inlink)
         }
 
         /* drawing font */
-        if (s->font_alpha) {
+        if (s->font_alpha && s->draw_text) {
             for (y = 0; y < font_height; y++) {
                 uint8_t *lineptr = data + (spectogram_height + y) * linesize;
                 uint8_t *spectogram_src = s->spectogram + s->spectogram_index * linesize;
@@ -645,7 +666,7 @@ static int plot_cqt(AVFilterLink *inlink)
                     fontcolor_value += 3;
                 }
             }
-        } else {
+        } else if (s->draw_text) {
             for (y = 0; y < font_height; y++) {
                 uint8_t *lineptr = data + (spectogram_height + y) * linesize;
                 memcpy(lineptr, s->spectogram + s->spectogram_index * linesize, video_width*3);
@@ -678,6 +699,16 @@ static int plot_cqt(AVFilterLink *inlink)
                             ux += video_scale;
                         }
                     }
+                }
+            }
+        } else {
+            for (y = 0; y < font_height; y++) {
+                uint8_t *lineptr = data + (spectogram_height + y) * linesize;
+                uint8_t *spectogram_src = s->spectogram + s->spectogram_index * linesize;
+                for (x = 0; x < video_width; x++) {
+                    lineptr[3*x] = spectogram_src[3*x];
+                    lineptr[3*x+1] = spectogram_src[3*x+1];
+                    lineptr[3*x+2] = spectogram_src[3*x+2];
                 }
             }
         }
@@ -720,7 +751,7 @@ static int filter_frame(AVFilterLink *inlink, AVFrame *insamples)
                 s->fft_data[x] = s->fft_data[x+step];
             s->remaining_fill += step;
         }
-        return AVERROR(EOF);
+        return AVERROR_EOF;
     }
 
     remaining = insamples->nb_samples;

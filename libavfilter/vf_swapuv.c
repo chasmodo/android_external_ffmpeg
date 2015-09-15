@@ -56,10 +56,10 @@ static int is_planar_yuv(const AVPixFmtDescriptor *desc)
 
     if (desc->flags & ~(AV_PIX_FMT_FLAG_BE | AV_PIX_FMT_FLAG_PLANAR | AV_PIX_FMT_FLAG_ALPHA) ||
         desc->nb_components < 3 ||
-        (desc->comp[1].depth_minus1 != desc->comp[2].depth_minus1))
+        (desc->comp[1].depth != desc->comp[2].depth))
         return 0;
     for (i = 0; i < desc->nb_components; i++) {
-        if (desc->comp[i].offset_plus1 != 1 ||
+        if (desc->comp[i].offset != 0 ||
             desc->comp[i].shift != 0 ||
             desc->comp[i].plane != i)
             return 0;
@@ -79,8 +79,7 @@ static int query_formats(AVFilterContext *ctx)
             ff_add_format(&formats, fmt);
     }
 
-    ff_set_common_formats(ctx, formats);
-    return 0;
+    return ff_set_common_formats(ctx, formats);
 }
 
 static const AVFilterPad swapuv_inputs[] = {

@@ -170,6 +170,26 @@ int av_vdpau_bind_context(AVCodecContext *avctx, VdpDevice device,
                           VdpGetProcAddress *get_proc_address, unsigned flags);
 
 /**
+ * Gets the parameters to create an adequate VDPAU video surface for the codec
+ * context using VDPAU hardware decoding acceleration.
+ *
+ * @note Behavior is undefined if the context was not successfully bound to a
+ * VDPAU device using av_vdpau_bind_context().
+ *
+ * @param avctx the codec context being used for decoding the stream
+ * @param type storage space for the VDPAU video surface chroma type
+ *              (or NULL to ignore)
+ * @param width storage space for the VDPAU video surface pixel width
+ *              (or NULL to ignore)
+ * @param height storage space for the VDPAU video surface pixel height
+ *              (or NULL to ignore)
+ *
+ * @return 0 on success, a negative AVERROR code on failure.
+ */
+int av_vdpau_get_surface_parameters(AVCodecContext *avctx, VdpChromaType *type,
+                                    uint32_t *width, uint32_t *height);
+
+/**
  * Allocate an AVVDPAUContext.
  *
  * @return Newly-allocated AVVDPAUContext or NULL on failure.
@@ -211,10 +231,8 @@ struct vdpau_render_state {
 
     int state; ///< Holds FF_VDPAU_STATE_* values.
 
-#if AV_HAVE_INCOMPATIBLE_LIBAV_ABI
     /** picture parameter information for all supported codecs */
     union AVVDPAUPictureInfo info;
-#endif
 
     /** Describe size/location of the compressed video data.
         Set to 0 when freeing bitstream_buffers. */
@@ -222,11 +240,6 @@ struct vdpau_render_state {
     int bitstream_buffers_used;
     /** The user is responsible for freeing this buffer using av_freep(). */
     VdpBitstreamBuffer *bitstream_buffers;
-
-#if !AV_HAVE_INCOMPATIBLE_LIBAV_ABI
-    /** picture parameter information for all supported codecs */
-    union AVVDPAUPictureInfo info;
-#endif
 };
 #endif
 
